@@ -25,10 +25,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
-
-	basecmd "github.com/kubernetes-sigs/custom-metrics-apiserver/pkg/cmd"
-	"github.com/kubernetes-sigs/custom-metrics-apiserver/pkg/provider"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,8 +39,10 @@ import (
 	"k8s.io/client-go/transport"
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
-	"k8s.io/sample-apiserver/pkg/apiserver"
 
+	customexternalmetrics "sigs.k8s.io/custom-metrics-apiserver/pkg/apiserver"
+	basecmd "sigs.k8s.io/custom-metrics-apiserver/pkg/cmd"
+	"sigs.k8s.io/custom-metrics-apiserver/pkg/provider"
 	"sigs.k8s.io/metrics-server/pkg/api"
 
 	generatedopenapi "sigs.k8s.io/prometheus-adapter/pkg/api/generated/openapi"
@@ -72,6 +72,8 @@ type PrometheusAdapter struct {
 	PrometheusClientTLSKeyFile string
 	// PrometheusTokenFile points to the file that contains the bearer token when connecting with Prometheus
 	PrometheusTokenFile string
+	// PrometheusHeaders is a k=v list of headers to set on requests to PrometheusURL
+	PrometheusHeaders []string
 	// AdapterConfigFile points to the file containing the metrics discovery configuration.
 	AdapterConfigFile string
 	// MetricsRelistInterval is the interval at which to relist the set of available metrics
@@ -113,8 +115,7 @@ func (cmd *PrometheusAdapter) makePromClient() (prom.Client, error) {
 		}
 		httpClient.Transport = transport.NewBearerAuthRoundTripper(string(data), httpClient.Transport)
 	}
-
-	genericPromClient := prom.NewGenericAPIClient(httpClient, baseURL)
+	genericPromClient := prom.NewGenericAPIClient(httpClient, baseURL, parseHeaderArgs(cmd.PrometheusHeaders))
 	instrumentedGenericPromClient := mprom.InstrumentGenericAPIClient(genericPromClient, baseURL.String())
 	return prom.NewClientForAPI(instrumentedGenericPromClient), nil
 }
@@ -134,6 +135,8 @@ func (cmd *PrometheusAdapter) addFlags() {
 		"Optional client TLS key file to use when connecting with Prometheus, auto-renewal is not supported")
 	cmd.Flags().StringVar(&cmd.PrometheusTokenFile, "prometheus-token-file", cmd.PrometheusTokenFile,
 		"Optional file containing the bearer token to use when connecting with Prometheus")
+	cmd.Flags().StringArrayVar(&cmd.PrometheusHeaders, "prometheus-header", cmd.PrometheusHeaders,
+		"Optional header to set on requests to prometheus-url. Can be repeated")
 	cmd.Flags().StringVar(&cmd.AdapterConfigFile, "config", cmd.AdapterConfigFile,
 		"Configuration file containing details of how to transform between Prometheus metrics "+
 			"and custom metrics API resources")
@@ -208,7 +211,7 @@ func (cmd *PrometheusAdapter) makeExternalProvider(promClient prom.Client, stopC
 	}
 
 	// construct the provider and start it
-	emProvider, runner := extprov.NewExternalPrometheusProvider(promClient, namers, cmd.MetricsRelistInterval)
+	emProvider, runner := extprov.NewExternalPrometheusProvider(promClient, namers, cmd.MetricsRelistInterval, cmd.MetricsMaxAge)
 	runner.RunUntil(stopCh)
 
 	return emProvider, nil
@@ -275,7 +278,7 @@ func main() {
 	}
 	cmd.Name = "prometheus-metrics-adapter"
 
-	cmd.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(generatedopenapi.GetOpenAPIDefinitions, openapinamer.NewDefinitionNamer(apiserver.Scheme))
+	cmd.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(generatedopenapi.GetOpenAPIDefinitions, openapinamer.NewDefinitionNamer(api.Scheme, customexternalmetrics.Scheme))
 	cmd.OpenAPIConfig.Info.Title = "prometheus-metrics-adapter"
 	cmd.OpenAPIConfig.Info.Version = "1.0.0"
 
@@ -405,4 +408,17 @@ func makePrometheusCAClient(caFilePath string, tlsCertFilePath string, tlsKeyFil
 			},
 		},
 	}, nil
+}
+
+func parseHeaderArgs(args []string) http.Header {
+	headers := make(http.Header, len(args))
+	for _, h := range args {
+		parts := strings.SplitN(h, "=", 2)
+		value := ""
+		if len(parts) > 1 {
+			value = parts[1]
+		}
+		headers.Add(parts[0], value)
+	}
+	return headers
 }

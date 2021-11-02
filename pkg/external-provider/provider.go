@@ -18,16 +18,15 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
 	pmodel "github.com/prometheus/common/model"
-	"k8s.io/klog/v2"
-
-	"github.com/kubernetes-sigs/custom-metrics-apiserver/pkg/provider"
 
 	apierr "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 	"k8s.io/metrics/pkg/apis/external_metrics"
+
+	"sigs.k8s.io/custom-metrics-apiserver/pkg/provider"
 
 	prom "sigs.k8s.io/prometheus-adapter/pkg/client"
 	"sigs.k8s.io/prometheus-adapter/pkg/naming"
@@ -40,7 +39,7 @@ type externalPrometheusProvider struct {
 	seriesRegistry ExternalSeriesRegistry
 }
 
-func (p *externalPrometheusProvider) GetExternalMetric(namespace string, metricSelector labels.Selector, info provider.ExternalMetricInfo) (*external_metrics.ExternalMetricValueList, error) {
+func (p *externalPrometheusProvider) GetExternalMetric(ctx context.Context, namespace string, metricSelector labels.Selector, info provider.ExternalMetricInfo) (*external_metrics.ExternalMetricValueList, error) {
 	selector, found, err := p.seriesRegistry.QueryForMetric(namespace, info.Metric, metricSelector)
 
 	if err != nil {
@@ -52,7 +51,7 @@ func (p *externalPrometheusProvider) GetExternalMetric(namespace string, metricS
 		return nil, provider.NewMetricNotFoundError(p.selectGroupResource(namespace), info.Metric)
 	}
 	// Here is where we're making the query, need to be before here xD
-	queryResults, err := p.promClient.Query(context.TODO(), pmodel.Now(), selector)
+	queryResults, err := p.promClient.Query(ctx, pmodel.Now(), selector)
 
 	if err != nil {
 		klog.Errorf("unable to fetch metrics from prometheus: %v", err)
@@ -78,9 +77,9 @@ func (p *externalPrometheusProvider) selectGroupResource(namespace string) schem
 }
 
 // NewExternalPrometheusProvider creates an ExternalMetricsProvider capable of responding to Kubernetes requests for external metric data
-func NewExternalPrometheusProvider(promClient prom.Client, namers []naming.MetricNamer, updateInterval time.Duration) (provider.ExternalMetricsProvider, Runnable) {
+func NewExternalPrometheusProvider(promClient prom.Client, namers []naming.MetricNamer, updateInterval time.Duration, maxAge time.Duration) (provider.ExternalMetricsProvider, Runnable) {
 	metricConverter := NewMetricConverter()
-	basicLister := NewBasicMetricLister(promClient, namers, updateInterval)
+	basicLister := NewBasicMetricLister(promClient, namers, maxAge)
 	periodicLister, _ := NewPeriodicMetricLister(basicLister, updateInterval)
 	seriesRegistry := NewExternalSeriesRegistry(periodicLister)
 	return &externalPrometheusProvider{
